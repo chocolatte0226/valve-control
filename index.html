@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>バルブ制御システム</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background-color: #f5f5f5; }
+        .container { background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); overflow-x: auto; }
+        button { padding: 10px 20px; margin: 10px 0; cursor: pointer; font-size: 16px; border-radius: 4px; border: 1px solid #ccc; }
+        #connectBtn { background-color: #007bff; color: white; border: none; }
+        #sendBtn { background-color: #28a745; color: white; border: none; font-weight: bold; }
+        #sendBtn:disabled { background-color: #aaa; cursor: not-allowed; }
+        #status { margin-bottom: 20px; font-weight: bold; color: #333; }
+        table { border-collapse: collapse; margin-top: 10px; width: 100%; min-width: 800px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+        th { background-color: #f8f9fa; }
+        input[type="checkbox"] { transform: scale(1.5); cursor: pointer; }
+        input[type="number"] { width: 70px; padding: 4px; text-align: center; }
+        .control-row { background-color: #e9ecef; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>バルブ制御システム (12バルブ × 10ステップ)</h2>
+        
+        <div>
+            <button id="connectBtn">ESP32と接続する</button>
+            <span id="status">ステータス: 未接続</span>
+        </div>
+
+        <table id="sequenceTable">
+            <thead>
+                <tr id="tableHeader">
+                    <th>項目 \ ステップ</th>
+                    </tr>
+            </thead>
+            <tbody>
+                </tbody>
+        </table>
+
+        <button id="sendBtn" disabled>シーケンスを送信 (Start)</button>
+    </div>
+
+    <script>
+        const STEPS = 10;
+        const VALVES = 12;
+
+        // --- UI生成処理 ---
+        const tableHeader = document.getElementById('tableHeader');
+        for (let i = 1; i <= STEPS; i++) {
+            let th = document.createElement('th');
+            th.textContent = `S${i}`;
+            tableHeader.appendChild(th);
+        }
+
+        const tbody = document.querySelector('#sequenceTable tbody');
+
+        // 1. 有効/無効の行を追加
+        let trEnable = document.createElement('tr');
+        trEnable.className = 'control-row';
+        trEnable.innerHTML = '<td><strong>有効 / 無効</strong></td>';
+        for (let s = 1; s <= STEPS; s++) {
+            let td = document.createElement('td');
+            let cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.id = `enable_s${s}`;
+            cb.checked = true; // 初期状態はすべて有効
+            td.appendChild(cb);
+            trEnable.appendChild(td);
+        }
+        tbody.appendChild(trEnable);
+
+        // 2. 実行時間の行を追加
+        let trTime = document.createElement('tr');
+        trTime.className = 'control-row';
+        trTime.innerHTML = '<td><strong>時間 (ミリ秒)</strong></td>';
+        for (let s = 1; s <= STEPS; s++) {
+            let td = document.createElement('td');
+            let input = document.createElement('input');
+            input.type = 'number';
+            input.id = `time_s${s}`;
+            input.value = 1000; // 初期値 1000ms (1秒)
+            input.min = 0;
+            input.step = 100;
+            td.appendChild(input);
+            trTime.appendChild(td);
+        }
+        tbody.appendChild(trTime);
+
+        // 3. バルブの行を追加
+        for (let v = 1; v <= VALVES; v++) {
+            let tr = document.createElement('tr');
+            let tdLabel = document.createElement('td');
+            tdLabel.textContent = `バルブ ${v}`;
+            tr.appendChild(tdLabel);
+
+            for (let s = 1; s <= STEPS; s++) {
+                let td = document.createElement('td');
+                let cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.id = `v${v}_s${s}`;
+                td.appendChild(cb);
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        }
+
+        // --- Bluetooth通信処理 ---
+        const SERVICE_UUID = '12345678-1234-5678-1234-56789abcdef0';
+        const CHARACTERISTIC_UUID = '12345678-1234-5678-1234-56789abcdef1';
+
+        let bluetoothDevice;
+        let commandCharacteristic;
+
+        const connectBtn = document.getElementById('connectBtn');
+        const sendBtn = document.getElementById('sendBtn');
+        const statusDiv = document.getElementById('status');
+
+        connectBtn.addEventListener('click', async () => {
+            try {
+                statusDiv.innerText = 'ステータス: 接続中...';
+                
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'ESP32_Valve_Control' }],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                const server = await bluetoothDevice.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                commandCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+                statusDiv.innerText = 'ステータス: 接続完了';
+                statusDiv.style.color = '#28a745';
+                sendBtn.disabled = false;
+
+            } catch (error) {
+                console.error(error);
+                statusDiv.innerText = 'ステータス: 接続失敗 (' + error.message + ')';
+                statusDiv.style.color = 'red';
+            }
+        });
+
+        // --- データ送信処理 ---
+        sendBtn.addEventListener('click', async () => {
+            if (!commandCharacteristic) return;
+
+            let payloadArray = [];
+
+            // 各ステップの状態を読み取る
+            for (let s = 1; s <= STEPS; s++) {
+                // 無効化されているステップはスキップする
+                const isEnabled = document.getElementById(`enable_s${s}`).checked;
+                if (!isEnabled) continue;
+
+                // 時間を取得 (未入力の場合は0にする)
+                const timeMs = parseInt(document.getElementById(`time_s${s}`).value) || 0;
+
+                // バルブの状態を12ビットの数値に変換
+                let valveState = 0;
+                for (let v = 1; v <= VALVES; v++) {
+                    const cb = document.getElementById(`v${v}_s${s}`);
+                    if (cb && cb.checked) {
+                        valveState |= (1 << (v - 1));
+                    }
+                }
+
+                // 配列に [時間, バルブ状態] の順番で追加
+                payloadArray.push(timeMs);
+                payloadArray.push(valveState);
+            }
+
+            // データが空（全て無効）の場合は送信しない
+            if (payloadArray.length === 0) {
+                alert("有効なステップがありません。");
+                return;
+            }
+
+            // 送信用の型 (16ビット整数の配列) に変換
+            const sequenceData = new Uint16Array(payloadArray);
+
+            try {
+                console.log("送信データ (時間, 状態, 時間, 状態...):", sequenceData);
+                await commandCharacteristic.writeValue(sequenceData);
+                statusDiv.innerText = 'ステータス: 送信完了 (' + new Date().toLocaleTimeString() + ')';
+            } catch (error) {
+                console.error(error);
+                statusDiv.innerText = 'ステータス: 送信エラー (' + error.message + ')';
+                statusDiv.style.color = 'red';
+            }
+        });
+    </script>
+</body>
+</html>
