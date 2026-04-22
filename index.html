@@ -11,7 +11,15 @@
         #sendBtn { background-color: #28a745; color: white; border: none; font-weight: bold; }
         #sendBtn:disabled { background-color: #aaa; cursor: not-allowed; }
         #status { margin-bottom: 20px; font-weight: bold; color: #333; }
+        
+        /* 設定パネルとボタンの装飾 */
         .settings-panel { background-color: #e9ecef; padding: 15px; margin-bottom: 15px; border-radius: 4px; }
+        .counter-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .btn-circle { width: 32px; height: 32px; padding: 0; border-radius: 50%; border: 1px solid #aaa; background-color: #fff; cursor: pointer; font-weight: bold; font-size: 18px; margin: 0; display: flex; justify-content: center; align-items: center; }
+        .btn-circle:hover { background-color: #ddd; }
+        .count-display { font-weight: bold; font-size: 18px; width: 30px; text-align: center; }
+        .setting-label { width: 220px; }
+        
         table { border-collapse: collapse; margin-top: 10px; width: 100%; min-width: 800px; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
         th { background-color: #f8f9fa; }
@@ -22,7 +30,7 @@
 </head>
 <body>
     <div class="container">
-        <h2>バルブ制御システム (12バルブ × 10ステップ)</h2>
+        <h2>バルブ制御システム</h2>
         
         <div>
             <button id="connectBtn">ESP32と接続する</button>
@@ -30,14 +38,27 @@
         </div>
 
         <div class="settings-panel">
-            <label for="loopCount"><strong>全体のループ回数: </strong></label>
-            <input type="number" id="loopCount" value="1" min="1" max="999"> 回
+            <div class="counter-controls">
+                <strong class="setting-label">バルブの数 (最大18): </strong>
+                <button class="btn-circle" id="btnValveMinus">-</button>
+                <span class="count-display" id="valveCountDisp">18</span>
+                <button class="btn-circle" id="btnValvePlus">+</button>
+            </div>
+            <div class="counter-controls">
+                <strong class="setting-label">ステップの数 (最大20): </strong>
+                <button class="btn-circle" id="btnStepMinus">-</button>
+                <span class="count-display" id="stepCountDisp">10</span>
+                <button class="btn-circle" id="btnStepPlus">+</button>
+            </div>
+            <div class="counter-controls" style="margin-top: 15px;">
+                <strong class="setting-label">全体のループ回数: </strong>
+                <input type="number" id="loopCount" value="1" min="1" max="999" style="width: 80px; font-size: 16px;"> 回
+            </div>
         </div>
 
         <table id="sequenceTable">
             <thead>
                 <tr id="tableHeader">
-                    <th>項目 \ ステップ</th>
                     </tr>
             </thead>
             <tbody>
@@ -48,68 +69,115 @@
     </div>
 
     <script>
-        const STEPS = 10;
-        const VALVES = 12;
+        // --- 状態管理 ---
+        let currentSteps = 10;
+        const MAX_STEPS = 20;
+        const MIN_STEPS = 1;
 
-        // --- UI生成処理 ---
-        const tableHeader = document.getElementById('tableHeader');
-        for (let i = 1; i <= STEPS; i++) {
-            let th = document.createElement('th');
-            th.textContent = `S${i}`;
-            tableHeader.appendChild(th);
-        }
+        let currentValves = 18;
+        const MAX_VALVES = 18; // ESP32側のピン設定上限に合わせる
+        const MIN_VALVES = 1;
 
-        const tbody = document.querySelector('#sequenceTable tbody');
+        // --- テーブル描画処理 ---
+        function renderTable() {
+            // 1. 現在入力されているデータをバックアップ（サイズ変更時にデータが消えないようにするため）
+            const backup = {};
+            document.querySelectorAll('#sequenceTable input[type="checkbox"]').forEach(cb => backup[cb.id] = cb.checked);
+            document.querySelectorAll('#sequenceTable input[type="number"]').forEach(num => backup[num.id] = num.value);
 
-        // 1. 有効/無効の行
-        let trEnable = document.createElement('tr');
-        trEnable.className = 'control-row';
-        trEnable.innerHTML = '<td><strong>有効 / 無効</strong></td>';
-        for (let s = 1; s <= STEPS; s++) {
-            let td = document.createElement('td');
-            let cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.id = `enable_s${s}`;
-            cb.checked = true;
-            td.appendChild(cb);
-            trEnable.appendChild(td);
-        }
-        tbody.appendChild(trEnable);
+            // 2. テーブルの初期化
+            const tableHeader = document.getElementById('tableHeader');
+            const tbody = document.querySelector('#sequenceTable tbody');
+            tableHeader.innerHTML = '<th>項目 \\ ステップ</th>';
+            tbody.innerHTML = '';
 
-        // 2. 実行時間の行
-        let trTime = document.createElement('tr');
-        trTime.className = 'control-row';
-        trTime.innerHTML = '<td><strong>時間 (ミリ秒)</strong></td>';
-        for (let s = 1; s <= STEPS; s++) {
-            let td = document.createElement('td');
-            let input = document.createElement('input');
-            input.type = 'number';
-            input.id = `time_s${s}`;
-            input.value = 1000;
-            input.min = 0;
-            input.step = 100;
-            td.appendChild(input);
-            trTime.appendChild(td);
-        }
-        tbody.appendChild(trTime);
+            // 3. ヘッダーの生成
+            for (let i = 1; i <= currentSteps; i++) {
+                let th = document.createElement('th');
+                th.textContent = `S${i}`;
+                tableHeader.appendChild(th);
+            }
 
-        // 3. バルブの行
-        for (let v = 1; v <= VALVES; v++) {
-            let tr = document.createElement('tr');
-            let tdLabel = document.createElement('td');
-            tdLabel.textContent = `バルブ ${v}`;
-            tr.appendChild(tdLabel);
-
-            for (let s = 1; s <= STEPS; s++) {
+            // 4. 有効/無効の行
+            let trEnable = document.createElement('tr');
+            trEnable.className = 'control-row';
+            trEnable.innerHTML = '<td><strong>有効 / 無効</strong></td>';
+            for (let s = 1; s <= currentSteps; s++) {
                 let td = document.createElement('td');
                 let cb = document.createElement('input');
                 cb.type = 'checkbox';
-                cb.id = `v${v}_s${s}`;
+                cb.id = `enable_s${s}`;
+                cb.checked = true; // デフォルトは有効
                 td.appendChild(cb);
-                tr.appendChild(td);
+                trEnable.appendChild(td);
             }
-            tbody.appendChild(tr);
+            tbody.appendChild(trEnable);
+
+            // 5. 実行時間の行
+            let trTime = document.createElement('tr');
+            trTime.className = 'control-row';
+            trTime.innerHTML = '<td><strong>時間 (ミリ秒)</strong></td>';
+            for (let s = 1; s <= currentSteps; s++) {
+                let td = document.createElement('td');
+                let input = document.createElement('input');
+                input.type = 'number';
+                input.id = `time_s${s}`;
+                input.value = 1000;
+                input.min = 0;
+                input.step = 100;
+                td.appendChild(input);
+                trTime.appendChild(td);
+            }
+            tbody.appendChild(trTime);
+
+            // 6. バルブの行
+            for (let v = 1; v <= currentValves; v++) {
+                let tr = document.createElement('tr');
+                let tdLabel = document.createElement('td');
+                tdLabel.textContent = `バルブ ${v}`;
+                tr.appendChild(tdLabel);
+
+                for (let s = 1; s <= currentSteps; s++) {
+                    let td = document.createElement('td');
+                    let cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.id = `v${v}_s${s}`;
+                    td.appendChild(cb);
+                    tr.appendChild(td);
+                }
+                tbody.appendChild(tr);
+            }
+
+            // 7. バックアップからデータを復元
+            document.querySelectorAll('#sequenceTable input[type="checkbox"]').forEach(cb => {
+                if(backup[cb.id] !== undefined) cb.checked = backup[cb.id];
+            });
+            document.querySelectorAll('#sequenceTable input[type="number"]').forEach(num => {
+                if(backup[num.id] !== undefined) num.value = backup[num.id];
+            });
+
+            // 8. 表示カウントの更新
+            document.getElementById('valveCountDisp').innerText = currentValves;
+            document.getElementById('stepCountDisp').innerText = currentSteps;
         }
+
+        // --- +/- ボタンのイベントリスナー ---
+        document.getElementById('btnValvePlus').addEventListener('click', () => {
+            if(currentValves < MAX_VALVES) { currentValves++; renderTable(); }
+        });
+        document.getElementById('btnValveMinus').addEventListener('click', () => {
+            if(currentValves > MIN_VALVES) { currentValves--; renderTable(); }
+        });
+        document.getElementById('btnStepPlus').addEventListener('click', () => {
+            if(currentSteps < MAX_STEPS) { currentSteps++; renderTable(); }
+        });
+        document.getElementById('btnStepMinus').addEventListener('click', () => {
+            if(currentSteps > MIN_STEPS) { currentSteps--; renderTable(); }
+        });
+
+        // 初回読み込み時にテーブルを描画
+        renderTable();
+
 
         // --- Bluetooth通信処理 ---
         const SERVICE_UUID = '12345678-1234-5678-1234-56789abcdef0';
@@ -147,18 +215,17 @@
         sendBtn.addEventListener('click', async () => {
             if (!commandCharacteristic) return;
 
-            // ★変更点：配列の先頭（1番目）にループ回数をセットする
             const loopCount = parseInt(document.getElementById('loopCount').value) || 1;
             let payloadArray = [loopCount];
 
-            // 各ステップの状態を読み取る
-            for (let s = 1; s <= STEPS; s++) {
+            // 動的に変更された currentSteps と currentValves の数だけループ処理
+            for (let s = 1; s <= currentSteps; s++) {
                 const isEnabled = document.getElementById(`enable_s${s}`).checked;
                 if (!isEnabled) continue;
 
                 const timeMs = parseInt(document.getElementById(`time_s${s}`).value) || 0;
                 let valveState = 0;
-                for (let v = 1; v <= VALVES; v++) {
+                for (let v = 1; v <= currentValves; v++) {
                     const cb = document.getElementById(`v${v}_s${s}`);
                     if (cb && cb.checked) {
                         valveState |= (1 << (v - 1));
@@ -168,16 +235,14 @@
                 payloadArray.push(valveState);
             }
 
-            // ループ回数(1つ) + データがない場合は送信しない
             if (payloadArray.length <= 1) {
                 alert("有効なステップがありません。");
                 return;
             }
 
-            const sequenceData = new Uint16Array(payloadArray);
+            const sequenceData = new Uint32Array(payloadArray);
 
             try {
-                console.log("送信データ [ループ回数, 時間, 状態, 時間, 状態...]:", sequenceData);
                 await commandCharacteristic.writeValue(sequenceData);
                 statusDiv.innerText = 'ステータス: 送信完了 (' + new Date().toLocaleTimeString() + ')';
             } catch (error) {
